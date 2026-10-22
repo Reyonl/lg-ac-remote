@@ -1,0 +1,55 @@
+name: Flutter CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Validate & Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        # app/build.gradle.kts: sourceCompatibility/targetCompatibility = Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter 3.47.5
+        # Versi sama persis dengan yang dipakai di lokal (flutter --version).
+        # JANGAN upgrade versi ini tanpa upgrade Flutter lokal.
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.5'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        # --no-fatal-infos: info lint tidak menggagalkan CI, tapi error dan
+        # warning tetap menggagalkan.
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        # Gate: unit test protokol LG (checksum, bit layout, encoder IR).
+        run: flutter test
+
+      - name: Build release APK (split per ABI)
+        # --split-per-abi menghasilkan APK per arsitektur. POCO F6 = arm64-v8a.
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lg-ac-remote-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
