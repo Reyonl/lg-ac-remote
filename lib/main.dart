@@ -35,6 +35,18 @@ class AcState {
   int mode = LgAcCode.modeCool;
   int fan = LgAcCode.fanAuto;
   LgProtocol protocol = LgProtocol.lg2;
+
+  /// Mirrors the Energy Save toggle on the original remote. Only valid in
+  /// Cooling mode; the unit pins the setpoint to 26 C and above.
+  bool energySave = false;
+
+  /// Last Dual Swing direction the user picked. The unit reverts by itself
+  /// after power cycling, so this is a UI convenience, not authoritative.
+  DualSwingMode dualSwing = DualSwingMode.off;
+
+  /// Minimum setpoint the protocol accepts right now. While Energy Save is
+  /// on the K05NSA manual limits the target to 26 C and up.
+  int get tempMin => energySave ? LgAcCode.energySaveMinTemp : LgAcCode.minTemp;
 }
 
 class RemoteScreen extends StatefulWidget {
@@ -74,13 +86,6 @@ class _RemoteScreenState extends State<RemoteScreen> {
     }
   }
 
-  /// Builds the full-state power-on code for the current settings.
-  int _powerOnCode() => LgAcCode.buildMessage(
-        mode: _ac.mode,
-        tempC: _ac.tempC,
-        fan: _ac.fan,
-      );
-
   Future<void> _send(int code) async {
     if (_busy) return;
     setState(() {
@@ -117,6 +122,54 @@ class _RemoteScreenState extends State<RemoteScreen> {
     setState(() => _status = msg);
   }
 
+  // --- Special functions (Energy Save / Ultra Turbo / Dual Swing) ---------
+
+  /// Energy Save toggle. Only Cooling supports it, and the unit clamps the
+  /// setpoint to [LgAcCode.energySaveMinTemp]..max while it is active.
+  Future<void> _toggleEnergySave() async {
+    if (!_ac.power) {
+      _showHint('Nyalakan AC dulu (tombol ON).');
+      return;
+    }
+    if (_ac.mode != LgAcCode.modeCool) {
+      _showHint('Energy Save hanya aktif di mode Cool.');
+      return;
+    }
+    final next = !_ac.energySave;
+    if (next && _ac.tempC < LgAcCode.energySaveMinTemp) {
+      setState(() => _ac.tempC = LgAcCode.energySaveMinTemp);
+    }
+    await _send(next ? LgSpecial.energySaveOn : LgSpecial.energySaveOff);
+    if (mounted) setState(() => _ac.energySave = next);
+    // The unit may have pushed the setpoint up on its own; resend state so
+    // the app's temperature matches what the AC is actually doing.
+    if (next) await _sendState();
+  }
+
+  /// Ultra Turbo / Jet. Fire-and-forget: the unit runs it for 30 minutes and
+  /// then reverts to the previous settings by itself.
+  Future<void> _triggerTurbo() async {
+    if (!_ac.power) {
+      _showHint('Nyalakan AC dulu (tombol ON).');
+      return;
+    }
+    await _send(LgSpecial.turboOn);
+    if (mounted) {
+      _showHint('Ultra Turbo aktif ±30 menit, lalu AC kembali ke setelan '
+          'semula otomatis.');
+    }
+  }
+
+  /// Dual Swing: pick the left-right direction and send the matching code.
+  Future<void> _setDualSwing(DualSwingMode mode) async {
+    if (!_ac.power) {
+      _showHint('Nyalakan AC dulu (tombol ON).');
+      return;
+    }
+    await _send(LgSpecial.dualSwing(mode));
+    if (mounted) setState(() => _ac.dualSwing = mode);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -140,6 +193,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
                   _modeCard(scheme),
                   const SizedBox(height: 14),
                   _fanCard(scheme),
+                  const SizedBox(height: 14),
+                  _featuresCard(scheme),
                   const SizedBox(height: 14),
                   _protocolCard(scheme),
                   const SizedBox(height: 14),
@@ -289,6 +344,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
   }
 
   Widget _tempCard(ColorScheme scheme) {
+    final min = _ac.tempMin;
     return _card(Column(
       children: [
         _sectionTitle('Suhu'),
@@ -299,8 +355,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
               onTap: _busy
                   ? null
                   : () => _change(() {
-                        _ac.tempC = (_ac.tempC - 1)
-                            .clamp(LgAcCode.minTemp, LgAcCode.maxTemp);
+                        _ac.tempC =
+                            (_ac.tempC - 1).clamp(min, LgAcCode.maxTemp);
                       }),
             ),
             Expanded(
@@ -328,15 +384,18 @@ class _RemoteScreenState extends State<RemoteScreen> {
               onTap: _busy
                   ? null
                   : () => _change(() {
-                        _ac.tempC = (_ac.tempC + 1)
-                            .clamp(LgAcCode.minTemp, LgAcCode.maxTemp);
+                        _ac.tempC =
+                            (_ac.tempC + 1).clamp(min, LgAcCode.maxTemp);
                       }),
             ),
           ],
         ),
         const SizedBox(height: 8),
         Text(
-          '${LgAcCode.minTemp}°C – ${LgAcCode.maxTemp}°C',
+          _ac.energySave
+              ? 'Energy Save aktif: ${LgAcCode.energySaveMinTemp}°C – '
+                  '${LgAcCode.maxTemp}°C'
+              : '${LgAcCode.minTemp}°C – ${LgAcCode.maxTemp}°C',
           style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
         ),
       ],
@@ -369,6 +428,13 @@ class _RemoteScreenState extends State<RemoteScreen> {
     setState(mutate);
     _sendState();
   }
+
+  /// Builds the full-state power-on code, respecting Energy Save's temp clamp.
+  int _powerOnCode() => LgAcCode.buildMessage(
+        mode: _ac.mode,
+        tempC: _ac.tempC.clamp(_ac.tempMin, LgAcCode.maxTemp),
+        fan: _ac.fan,
+      );
 
   static const List<({int mode, String label, IconData icon})> _modes = [
     (mode: LgAcCode.modeCool, label: 'Cool', icon: Icons.ac_unit),
@@ -481,6 +547,78 @@ class _RemoteScreenState extends State<RemoteScreen> {
         ),
       ),
     );
+  }
+
+  /// Energy Save / Ultra Turbo / Dual Swing — the special buttons that live
+  /// on the real AKB74395308 remote next to the fan controls.
+  Widget _featuresCard(ColorScheme scheme) {
+    const dualSwingOptions = [
+      (mode: DualSwingMode.off, label: 'Mati', icon: Icons.block),
+      (mode: DualSwingMode.both, label: 'Kiri+Kanan', icon: Icons.swap_horiz),
+      (mode: DualSwingMode.left, label: 'Kiri', icon: Icons.chevron_left),
+      (mode: DualSwingMode.right, label: 'Kanan', icon: Icons.chevron_right),
+    ];
+
+    final energySaveActive = _ac.energySave;
+    final canEnergySave = _ac.mode == LgAcCode.modeCool;
+
+    return _card(Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('Fitur Khusus'),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _chip(
+              label: 'Energy Save',
+              icon: Icons.eco_outlined,
+              active: energySaveActive,
+              onTap: _busy ? null : _toggleEnergySave,
+            ),
+            _chip(
+              label: 'Ultra Turbo',
+              icon: Icons.whatshot,
+              active: false,
+              onTap: _busy ? null : _triggerTurbo,
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Text(
+          'Dual Swing (arah kipas kiri/kanan)',
+          style: TextStyle(
+            color: scheme.onSurfaceVariant,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: dualSwingOptions.map((o) {
+            final active = _ac.dualSwing == o.mode;
+            return _chip(
+              label: o.label,
+              icon: o.icon,
+              active: active,
+              onTap: _busy ? null : () => _setDualSwing(o.mode),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          canEnergySave
+              ? 'Energy Save mengunci suhu minimal ${LgAcCode.energySaveMinTemp}°C. '
+                  'Ultra Turbo memberi hembusan maksimal ±30 menit lalu kembali '
+                  'otomatis. Dual Swing mengatur arah sirip kiri/kanan.'
+              : 'Energy Save hanya tersedia di mode Cool — ganti mode dulu.',
+          style: TextStyle(
+              color: scheme.onSurfaceVariant, fontSize: 12, height: 1.4),
+        ),
+      ],
+    ));
   }
 
   Widget _protocolCard(ColorScheme scheme) {

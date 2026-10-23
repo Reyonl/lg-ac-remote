@@ -113,4 +113,86 @@ void main() {
       }
     });
   });
+
+  // --- Special commands (Energy Save / Ultra Turbo / Dual Swing) -----------
+  //
+  // These reproduce the reference frames used by the cross-library
+  // implementations that inspired this protocol file:
+  //   * IRremoteESP8266 `ir_LG.h`  (crankyoldgit)
+  //   * Arduino-IRremote `ac_LG.h`  (Armin Joachimsmeyer)
+  //   * ESPHome `climate_ir_lg.cpp`
+  group('LgSpecial', () {
+    test('reproduces the reference Energy Save frames', () {
+      expect(LgSpecial.energySaveOn, 0x8810045);
+      expect(LgSpecial.energySaveOff, 0x8810056);
+    });
+
+    test('reproduces the reference Ultra Turbo frame', () {
+      expect(LgSpecial.turboOn, 0x8810089);
+    });
+
+    test('reproduces the reference Dual Swing frames', () {
+      expect(LgSpecial.dualSwingBoth, 0x881316B); // == kLgAcSwingHAuto
+      expect(LgSpecial.dualSwingLeft, 0x8813105);
+      expect(LgSpecial.dualSwingRight, 0x8813116);
+      expect(LgSpecial.dualSwingOff, 0x881317C); // == kLgAcSwingHOff
+    });
+
+    test('reproduces the reference Advanced Swing V frames', () {
+      expect(LgSpecial.swingVOn, 0x8813149);
+      expect(LgSpecial.swingVStop, 0x881315A);
+    });
+
+    test('every special frame is checksum-valid and carries the 0x88 '
+        'signature', () {
+      final codes = [
+        LgSpecial.energySaveOn,
+        LgSpecial.energySaveOff,
+        LgSpecial.turboOn,
+        LgSpecial.dualSwingBoth,
+        LgSpecial.dualSwingLeft,
+        LgSpecial.dualSwingRight,
+        LgSpecial.dualSwingOff,
+        LgSpecial.swingVOn,
+        LgSpecial.swingVStop,
+        LgSpecial.louverLeft,
+        LgSpecial.louverMid,
+        LgSpecial.louverRight,
+      ];
+
+      for (final c in codes) {
+        expect(LgAcCode.validChecksum(c), isTrue,
+            reason: '0x${c.toRadixString(16)}');
+        expect((c >> 20) & 0xFF, LgAcCode.signature,
+            reason: '0x${c.toRadixString(16)}');
+        expect(c, lessThan(1 << 28));
+      }
+    });
+
+    test('dualSwing maps every mode to a distinct code', () {
+      final codes = DualSwingMode.values.map(LgSpecial.dualSwing).toList();
+      expect(codes.toSet().length, DualSwingMode.values.length);
+    });
+
+    test('dualSwing(off) is the stop frame, not a swing frame', () {
+      expect(LgSpecial.dualSwing(DualSwingMode.off), LgSpecial.dualSwingOff);
+      expect(LgSpecial.dualSwing(DualSwingMode.both), LgSpecial.dualSwingBoth);
+      expect(LgSpecial.dualSwing(DualSwingMode.left), LgSpecial.dualSwingLeft);
+      expect(
+          LgSpecial.dualSwing(DualSwingMode.right), LgSpecial.dualSwingRight);
+    });
+
+    test('special frames encode cleanly for both wire formats', () {
+      for (final p in LgProtocol.values) {
+        for (final c in [LgSpecial.turboOn, LgSpecial.dualSwingBoth]) {
+          final pattern = LgIrEncoder.encode(c, p);
+          expect(pattern.length.isEven, isTrue);
+          expect(pattern.length, 64);
+          for (final v in pattern) {
+            expect(v, greaterThan(0));
+          }
+        }
+      }
+    });
+  });
 }
