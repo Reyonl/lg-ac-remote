@@ -43,8 +43,10 @@ jobs:
       - name: Test (gate sebelum rilis)
         run: flutter test
 
-      - name: Build release APK (split per ABI)
-        run: flutter build apk --release --split-per-abi
+      - name: Build release APKs (Universal & Split ABI)
+        run: |
+          flutter build apk --release
+          flutter build apk --release --split-per-abi
 
       - name: GitHub Release dengan APK
         uses: softprops/action-gh-release@v2
