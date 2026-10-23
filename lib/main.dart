@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'ir_service.dart';
 import 'lg_ac_protocol.dart';
+import 'remote_preferences.dart';
 
 void main() {
   runApp(const LgAcRemoteApp());
@@ -47,6 +48,74 @@ class AcState {
   /// Minimum setpoint the protocol accepts right now. While Energy Save is
   /// on the K05NSA manual limits the target to 26 C and up.
   int get tempMin => energySave ? LgAcCode.energySaveMinTemp : LgAcCode.minTemp;
+
+  /// Applies saved values from persistent preferences with safe bounds.
+  void applyPreferences(Map<String, dynamic> data) {
+    if (data[RemotePreferences.keyPower] is bool) {
+      power = data[RemotePreferences.keyPower] as bool;
+    }
+    if (data[RemotePreferences.keyTemp] is int) {
+      tempC = (data[RemotePreferences.keyTemp] as int).clamp(
+        LgAcCode.minTemp,
+        LgAcCode.maxTemp,
+      );
+    }
+    if (data[RemotePreferences.keyMode] is int) {
+      final m = data[RemotePreferences.keyMode] as int;
+      if (m == LgAcCode.modeCool ||
+          m == LgAcCode.modeDry ||
+          m == LgAcCode.modeFan ||
+          m == LgAcCode.modeAuto ||
+          m == LgAcCode.modeHeat) {
+        mode = m;
+      }
+    }
+    if (data[RemotePreferences.keyFan] is int) {
+      final f = data[RemotePreferences.keyFan] as int;
+      if (f == LgAcCode.fanAuto ||
+          f == LgAcCode.fanLowest ||
+          f == LgAcCode.fanLow ||
+          f == LgAcCode.fanMedium ||
+          f == LgAcCode.fanMax) {
+        fan = f;
+      }
+    }
+    if (data[RemotePreferences.keyProtocol] is String) {
+      final pStr = data[RemotePreferences.keyProtocol] as String;
+      for (final p in LgProtocol.values) {
+        if (p.name == pStr) {
+          protocol = p;
+          break;
+        }
+      }
+    }
+    if (data[RemotePreferences.keyEnergySave] is bool) {
+      energySave = data[RemotePreferences.keyEnergySave] as bool;
+      if (energySave && tempC < LgAcCode.energySaveMinTemp) {
+        tempC = LgAcCode.energySaveMinTemp;
+      }
+    }
+    if (data[RemotePreferences.keyDualSwing] is String) {
+      final dsStr = data[RemotePreferences.keyDualSwing] as String;
+      for (final ds in DualSwingMode.values) {
+        if (ds.name == dsStr) {
+          dualSwing = ds;
+          break;
+        }
+      }
+    }
+  }
+
+  /// Persists the current state to SharedPreferences.
+  Future<void> save() => RemotePreferences.save(
+        power: power,
+        tempC: tempC,
+        mode: mode,
+        fan: fan,
+        protocol: protocol,
+        energySave: energySave,
+        dualSwing: dualSwing,
+      );
 }
 
 class RemoteScreen extends StatefulWidget {
@@ -69,7 +138,20 @@ class _RemoteScreenState extends State<RemoteScreen> {
   @override
   void initState() {
     super.initState();
+    _loadSavedSettings();
     _probeIr();
+  }
+
+  Future<void> _loadSavedSettings() async {
+    final data = await RemotePreferences.load();
+    if (!mounted) return;
+    setState(() {
+      _ac.applyPreferences(data);
+    });
+  }
+
+  void _saveSettings() {
+    _ac.save();
   }
 
   Future<void> _probeIr() async {
@@ -106,7 +188,10 @@ class _RemoteScreenState extends State<RemoteScreen> {
   Future<void> _sendPower(bool on) async {
     final code = on ? _powerOnCode() : LgAcCode.offCommand;
     await _send(code);
-    if (mounted) setState(() => _ac.power = on);
+    if (mounted) {
+      setState(() => _ac.power = on);
+      _saveSettings();
+    }
   }
 
   /// Send the current full state (used after temp/mode/fan change while on).
@@ -140,7 +225,10 @@ class _RemoteScreenState extends State<RemoteScreen> {
       setState(() => _ac.tempC = LgAcCode.energySaveMinTemp);
     }
     await _send(next ? LgSpecial.energySaveOn : LgSpecial.energySaveOff);
-    if (mounted) setState(() => _ac.energySave = next);
+    if (mounted) {
+      setState(() => _ac.energySave = next);
+      _saveSettings();
+    }
     // The unit may have pushed the setpoint up on its own; resend state so
     // the app's temperature matches what the AC is actually doing.
     if (next) await _sendState();
@@ -167,7 +255,10 @@ class _RemoteScreenState extends State<RemoteScreen> {
       return;
     }
     await _send(LgSpecial.dualSwing(mode));
-    if (mounted) setState(() => _ac.dualSwing = mode);
+    if (mounted) {
+      setState(() => _ac.dualSwing = mode);
+      _saveSettings();
+    }
   }
 
   @override
@@ -426,6 +517,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
   /// Local state update + resync the AC with the new full-state code.
   void _change(void Function() mutate) {
     setState(mutate);
+    _saveSettings();
     _sendState();
   }
 
@@ -635,7 +727,12 @@ class _RemoteScreenState extends State<RemoteScreen> {
                 child: _chip(
                   label: p.label,
                   active: active,
-                  onTap: _busy ? null : () => setState(() => _ac.protocol = p),
+                  onTap: _busy
+                      ? null
+                      : () {
+                          setState(() => _ac.protocol = p);
+                          _saveSettings();
+                        },
                 ),
               ),
             );
