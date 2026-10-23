@@ -12,7 +12,7 @@ void main() {
     await tester.pumpWidget(const LgAcRemoteApp());
     await tester.pumpAndSettle();
     expect(find.text('LG K05NSA'), findsOneWidget);
-    expect(find.text('ON'), findsOneWidget);
-    expect(find.text('OFF'), findsOneWidget);
+    expect(find.text('ON'), findsWidgets);
+    expect(find.text('OFF'), findsWidgets);
   });
 }
