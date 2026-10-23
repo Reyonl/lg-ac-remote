@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.reyonl.lg_ac_remote"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
